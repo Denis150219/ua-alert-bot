@@ -6,7 +6,7 @@ import os
 from bs4 import BeautifulSoup
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+CHAT_ID = os.getenv("CHAT_ID") or os.getenv("ІДЕНТИФІКАТОР_ЧАТУ")
 
 sent_posts = set()
 

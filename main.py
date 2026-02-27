@@ -1,88 +1,96 @@
-import requests
-import feedparser
-import hashlib
-import time
 import os
-from bs4 import BeautifulSoup
-
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID") or os.getenv("ІДЕНТИФІКАТОР_ЧАТУ")
-
-sent_posts = set()
+import time
+import requests
 
 
-def send_message(text):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url, data={
-        "chat_id": CHAT_ID,
+def get_env_any(*keys: str, default: str | None = None) -> str | None:
+    """
+    Повертає першу знайдену змінну оточення з переданих ключів.
+    Railway інколи показує/називає змінні по-іншому, тому беремо з кількох варіантів.
+    """
+    for k in keys:
+        v = os.getenv(k)
+        if v is not None and str(v).strip() != "":
+            return str(v).strip()
+    return default
+
+
+def normalize_chat_id(raw: str) -> str:
+    """
+    Для каналів/супергруп chat_id зазвичай виглядає як -100XXXXXXXXXX.
+    Якщо користувач дав 100XXXXXXXXXX (без -100 і без мінуса) — виправимо.
+    """
+    s = str(raw).strip()
+
+    # вже правильний формат
+    if s.startswith("-100"):
+        return s
+
+    # якщо просто від’ємний id (наприклад -12345) — залишаємо як є
+    if s.startswith("-"):
+        return s
+
+    # якщо дали 1002594728892 -> робимо -1002594728892
+    # (це типова ситуація з каналами)
+    if s.isdigit() and len(s) >= 10:
+        return "-100" + s[-10:] if len(s) == 10 else "-100" + s
+
+    return s
+
+
+def tg_send_message(bot_token: str, chat_id: str, text: str) -> None:
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
         "text": text,
         "parse_mode": "HTML",
-        "disable_web_page_preview": False
-    })
+        "disable_web_page_preview": True,
+    }
+    r = requests.post(url, data=payload, timeout=30)
+    if not r.ok:
+        raise RuntimeError(f"Telegram API error: {r.status_code} {r.text}")
 
 
-def send_photo(photo_url, caption):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-    requests.post(url, data={
-        "chat_id": CHAT_ID,
-        "photo": photo_url,
-        "caption": caption,
-        "parse_mode": "HTML"
-    })
+def main():
+    bot_token = get_env_any("BOT_TOKEN", "TELEGRAM_BOT_TOKEN")
+    chat_id_raw = get_env_any(
+        "CHAT_ID",
+        "CHATID",
+        "ID_CHAT",
+        "CHAT",
+        "CHANNEL_ID",
+        "ІДЕНТИФІКАТОР_ЧАТУ",
+        "ИДЕНТИФИКАТОР_ЧАТА",
+    )
 
+    if not bot_token:
+        raise RuntimeError("BOT_TOKEN is not set")
+    if not chat_id_raw:
+        raise RuntimeError("CHAT_ID (or equivalent) is not set")
 
-def process_news():
-    feed = feedparser.parse("https://www.ukr.net/rss/")
-    for entry in feed.entries:
-        unique_id = hashlib.md5(entry.link.encode()).hexdigest()
-        if unique_id in sent_posts:
-            continue
+    chat_id = normalize_chat_id(chat_id_raw)
 
-        title = entry.title
-        link = entry.link
+    print("=== ua-alert-bot started ===")
+    print(f"CHAT_ID(raw)={chat_id_raw} -> CHAT_ID(norm)={chat_id}")
 
-        response = requests.get(link, timeout=10)
-        soup = BeautifulSoup(response.text, "html.parser")
+    # тестове повідомлення при старті (можеш потім прибрати)
+    try:
+        tg_send_message(bot_token, chat_id, "✅ Бот запущено на Railway. Тестове повідомлення.")
+        print("Startup test message: OK")
+    except Exception as e:
+        print(f"Startup test message: FAIL -> {e}")
 
-        paragraphs = soup.find_all("p")
-        text = "\n".join([p.get_text() for p in paragraphs[:5]])
+    # нескінченний цикл, щоб контейнер не зупинявся
+    while True:
+        try:
+            # тут потім вставимо твою основну логіку (RSS/alerts/репост тощо)
+            print("Heartbeat: bot is alive")
+        except Exception as e:
+            # якщо щось впаде — не вбиваємо процес, просто лог + пауза
+            print(f"Loop error: {e}")
 
-        message = f"<b>{title}</b>\n\n{text}\n\n🔗 {link}"
-
-        img = soup.find("img")
-        if img and img.get("src"):
-            send_photo(img.get("src"), message)
-        else:
-            send_message(message)
-
-        sent_posts.add(unique_id)
-        time.sleep(2)
-
-
-def process_alerts():
-    response = requests.get("https://alerts.in.ua/")
-    if response.status_code == 200:
-        soup = BeautifulSoup(response.text, "html.parser")
-        alerts = soup.find_all("div", class_="alert")
-
-        for alert in alerts:
-            text = alert.get_text(strip=True)
-            unique_id = hashlib.md5(text.encode()).hexdigest()
-            if unique_id in sent_posts:
-                continue
-
-            message = f"🚨 <b>ПОВІТРЯНА ТРИВОГА</b>\n\n{text}"
-            send_message(message)
-            sent_posts.add(unique_id)
-            time.sleep(1)
+        time.sleep(30)
 
 
 if __name__ == "__main__":
-    while True:
-        try:
-            process_news()
-            process_alerts()
-        except Exception as e:
-            print("Error:", e)
-
-        time.sleep(120)
+    main()
